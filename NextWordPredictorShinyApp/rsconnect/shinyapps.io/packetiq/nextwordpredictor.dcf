@@ -1,0 +1,10 @@
+name: nextwordpredictor
+title: NextWordPredictor
+account: packetiq
+server: shinyapps.io
+appId: 163185
+bundleId: 752601
+url: https://packetiq.shinyapps.io/nextwordpredictor/
+when: 1489858148.1503
+asMultiple: FALSE
+asStatic: FALSE
