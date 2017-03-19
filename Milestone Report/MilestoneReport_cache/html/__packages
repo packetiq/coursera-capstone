@@ -1,0 +1,11 @@
+base
+knitr
+dplyr
+stringi
+NLP
+tm
+RWeka
+ggplot2
+RColorBrewer
+wordcloud
+ngram

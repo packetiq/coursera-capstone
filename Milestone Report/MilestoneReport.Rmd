@@ -1,0 +1,266 @@
+---
+title: "Milestone Report - Exploratory Data Analysis"
+author: "James Baxter"
+date: "February 18, 2017"
+output:
+  html_document: default
+---
+
+## Introduction  
+
+This is the milestone report for the Coursera Capstone project. The Capstone objective is to build an application that uses a predictive model to provide a list of possible 'next' words based on a word that was entered. This could be useful for applications such as texting and email mobile apps.  
+
+This project utilizes Natural Language Processing (NLP) concepts such as n-gram. N-gram is a contiguous sequence of n items from a given sequence of text or speech. The predictive model relies extensively on the concept of n-gram as the word that we are trying to predict relies on the word(s) that precede(s) it.  
+
+This milestone report focuses on exploring 3 English text files that will be used for this project. The files include blog, news and twitter data collected via the web. The blog and news corpora are similar in nature, but the twitter corpus is different due to the 140 character limit of Twitter messages. Due to the size of the files we will be working with a percentage-based sample set of each data source.  
+
+We will be using this data later on in the course to build the word prediction algorithm. Based on the results of this exploration we will also plan the design of our prediction algorithm and a hosting Shiny app. 
+
+This report includes functional in-line R code so that the results can be duplicated. The sections which follow outline the steps required to import, process, and visualize the data.  
+
+## Data Processing
+
+### Load the data
+
+Load the relevant packages and set up global settings:  
+``` {r load.packages, message=F}
+library(knitr)    # install.packages("knitr")
+library(dplyr)    # install.packages("dplyr")
+library(stringi)  # install.packages("stringi")
+library(tm)       # install.packages("tm")
+                  # RWeka requires Java Runtime: https://www.java.com/en/download/manual.jsp
+library(RWeka)    # install.packages("RWeka")
+library(ggplot2)  # install.packages("ggplot2")
+library(wordcloud)# install.packages("wordcloud")
+library(ngram)    # install.packages("ngram")
+
+sampleSize <- 1000# adjust per memory capability
+
+opts_chunk$set(echo = T, cache= TRUE)
+```
+
+Download the data from the provided URL:  
+```{r import.data.files, message=F, cache=T}
+if (!file.exists("Coursera-SwiftKey.zip")){
+        download.file("https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip", 
+                      "Coursera-SwiftKey.zip")
+  unzip("Coursera-SwiftKey.zip")
+}
+```
+
+The data sets consist of text from Blogs, News, and Twitter feeds. The data sets are provided in 4 languages: German, English (US), Finnish and Russian. For this project, we will focus on only the English data set.  
+
+Load the data files into R, extract 1,000 samples from each, and create some summary statistics:    
+```{r load.data.sample.summary, warning=F, cache=T}
+
+if (!(file.exists("./AllDataSamples.txt") & (file.exists("./fileSummary.RDS")))) {
+
+  ### Read data files
+
+  blogs <- readLines("./final/en_US/en_US.blogs.txt", encoding = "UTF-8", skipNul=TRUE)
+  news <- readLines("./final/en_US/en_US.news.txt", encoding = "UTF-8", skipNul=TRUE)
+  twitter <- readLines("./final/en_US/en_US.twitter.txt", encoding = "UTF-8", skipNul=TRUE)
+  
+  ### Extract a data sample from each file
+  
+  sampleTwitter <- twitter[sample(1:length(twitter),sampleSize)]
+  sampleNews <- news[sample(1:length(news),sampleSize)]
+  sampleBlogs <- blogs[sample(1:length(blogs),sampleSize)]
+  dataSample <- c(sampleTwitter,sampleNews,sampleBlogs)
+  
+  ### Save combined samples to text files
+  
+  writeLines(sampleTwitter, "./TwitterSamples.txt")
+  writeLines(sampleNews, "./NewsSamples.txt")
+  writeLines(sampleBlogs, "./BlogsSamples.txt")
+  writeLines(dataSample, "./AllDataSamples.txt")
+
+  ### Gather Data Set Statistics  
+
+  # Get file sizes
+  blogs.size <- file.info("final/en_US/en_US.blogs.txt")$size / 1024 ^ 2
+  news.size <- file.info("final/en_US/en_US.news.txt")$size / 1024 ^ 2
+  twitter.size <- file.info("final/en_US/en_US.twitter.txt")$size / 1024 ^ 2
+  sample.size <- file.info("./DataSample.txt")$size / 1024 ^ 2
+  
+  # Get the number of words in each file
+  # stri_count_words {stringi} - count the number of text boundaries 
+  blogs.words <- stri_count_words(blogs)
+  news.words <- stri_count_words(news)
+  twitter.words <- stri_count_words(twitter)
+  sample.words <- stri_count_words(dataSample)
+  
+  # Create a summary of the data sets
+  fileSummary <- data.frame(source = c("blogs", "news", "twitter","dataSample"),
+                    file.size.MB = c(blogs.size, news.size, twitter.size,sample.size),
+                    num.lines = c(length(blogs), length(news), length(twitter), length(dataSample)),
+                    num.words = c(sum(blogs.words), sum(news.words), sum(twitter.words), sum(sample.words)),
+                    mean.words = c(mean(blogs.words), mean(news.words), mean(twitter.words), mean(sample.words)))
+  
+  colnames(fileSummary) <- c("File Name", "File Size (MB)", "Line Count", "Word Count", "Avg Words/Line")
+  
+  saveRDS(fileSummary, file = "./fileSummary.RDS")
+
+  ## memory cleanup
+  rm(blogs)
+  rm(blogs.size)
+  rm(blogs.words)
+  rm(fileSummary)
+  rm(news)
+  rm(news.size)
+  rm(news.words)
+  rm(sample.size)
+  rm(sample.words)
+  rm(sampleBlogs)
+  rm(sampleNews)
+  rm(sampleTwitter)
+  rm(twitter)
+  rm(twitter.size)
+  rm(twitter.words)
+}
+
+con <- file("./AllDataSamples.txt")
+dataSample <- readLines(con)
+close(con)
+rm(con)  
+
+fileSummaryDF <- readRDS("./fileSummary.RDS")
+```
+
+### Data Cleaning  
+
+Now we will create a 'corpus' and 'clean' the data sample before performing any exploratory analysis to avoid counting words twice because of capitalization, punctuation, etc., so we will remove URLs, special characters, punctuations, numbers, excess whitespace, stopwords, and change the text to lower case.  
+
+A common definition of a 'corpus' is "a collection of written texts, especially the entire works of a particular author or a body of writing on a particular subject." The corpus for this predictive modeling exercise is the combination of the sampled text lines from the blog, news, and twitter data sets:  
+
+```{r data.corpus.cleaning, cache=T}
+### Read data files
+if (!file.exists("./cleanedCorpus.RDS")) {
+  
+  # Create a 'corpus' and clean up the data
+  # A corpus creates a seperate document from each line in the source text + it's metadata
+  # VCorpus {tm} - create volatile corpora
+  # VectorSource {tm} - create a vector source which interprets each element of the vector as a document
+  corpus <- VCorpus(VectorSource(dataSample))
+  # content_transformer {tm} - create content transformers - functions which modify the content of an R object
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+  # tm_map {tm} - transformation on corpora - interface to apply functions (also denoted as mappings) to corpora
+  corpus <- tm_map(corpus, toSpace, "(f|ht)tp(s?)://(.*)[.][a-z]+")
+  corpus <- tm_map(corpus, toSpace, "@[^\\s]+")
+  corpus <- tm_map(corpus, tolower)
+  corpus <- tm_map(corpus, removeWords, stopwords("en"))
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, PlainTextDocument)
+  
+  saveRDS(corpus, file = "./cleanedCorpus.RDS")
+}  
+
+corpus <- readRDS("./cleanedCorpus.RDS")
+```
+
+### N-Gram Tokenization
+
+We will extract and create Unigram (one word), Bigram (two word), and Trigram (three word) tokens from the sample data text for use in later analysis:   
+
+```{r n-gram.tokenization.plots, cache=T}
+
+if (!(file.exists("./uniFreq.RDS") & (file.exists("./biFreq.RDS")) & (file.exists("./triFreq.RDS")))) {
+  
+  bi <- function(x) NGramTokenizer(x, Weka_control(min=2, max=2))
+  tri <- function(x) NGramTokenizer(x, Weka_control(min=3, max=3))
+  
+  uniGramMatrix <- TermDocumentMatrix(corpus)
+  biGramMatrix <- TermDocumentMatrix(corpus, control = list(tokenize = bi))
+  triGramMatrix <- TermDocumentMatrix(corpus, control = list(tokenize = tri))
+  
+  freq_func <- function(matrix) {
+    f <- sort(rowSums(as.matrix(matrix)), decreasing = TRUE)
+    result <- data.frame(word = names(f), freq= f)
+    return(result)
+  }
+  
+  uniFreq <- freq_func(removeSparseTerms(uniGramMatrix, 0.99))
+  saveRDS(uniFreq, file = "./uniFreq.RDS")
+  biFreq <- freq_func(removeSparseTerms(biGramMatrix, 0.999))
+  saveRDS(biFreq, file = "./biFreq.RDS")
+  triFreq <- freq_func(removeSparseTerms(triGramMatrix, 0.9999))
+  saveRDS(triFreq, file = "./triFreq.RDS")
+}
+ 
+uniFreq <- readRDS("./uniFreq.RDS")
+biFreq <- readRDS("./biFreq.RDS")
+triFreq <- readRDS("./triFreq.RDS")
+```
+
+## Exploratory Data Analysis and Visualizations
+
+We are now ready to perform some initial exploratory analysis on the data sets.  
+
+### Summary Statistics
+
+This table displays the data set file sizes, line and word counts, and mean number of words per line:  
+
+```{r summary.stats, cache=T}
+knitr::kable(head(fileSummaryDF, 10))
+```
+
+### Text Samples
+
+It is interesting to compare some of the sampled lines before (data.sample) and after (corpus) the cleanup process:  
+
+#### Example 1  
+```{r text.example1, cache=T}
+dataSample[5]
+writeLines(as.character(corpus[[5]]))
+```
+***
+#### Example 2  
+```{r text.example2, cache=T}
+dataSample[25]
+#corpus[[3]]$content
+writeLines(as.character(corpus[[25]]))
+```
+
+### Word Cloud
+
+Just for fun, here's a word cloud of the top single words that occured at least 25 times in the sample collection; the font size and word location relative to center represents how popular each word is in relation to the others:  
+
+```{r wordcloud, warning=F, cache=T}
+# wordcloud {wordcloud} - plot a word cloud
+wordcloud(corpus, min.freq = 25, random.order = FALSE, colors = brewer.pal(8, "Spectral"))
+```
+
+### N-Gram Plots
+
+The following three plots illustrate the most common Unigrams, Bigrams, and Trigrams:  
+
+```{r plots, cache=T}
+
+plot_func <- function(freq,top,title) {
+    freq_top <- head(freq,top)
+    ggplot(freq_top,aes(x=reorder(word,freq), y=freq, fill=freq)) +
+      geom_bar(stat = "identity") +
+      theme_bw() +
+      coord_flip() +
+      theme(axis.title.y = element_blank()) +
+      labs(y="Frequency", title=title)
+}
+
+plot_func(uniFreq,15,"Top Unigrams")
+plot_func(biFreq,15,"Top Bigrams")
+plot_func(triFreq,15,"Top Trigrams")
+```
+
+## Conclusion  
+
+This milestone report covered importing, cleaning, and tokenizing the chosen text data sets, and accomplished some preliminary exploratory analysis with visualizations.  
+
+### Next Steps  
+
+The next steps planned for this capstone is to build the foundation of a Shiny prediction model application that allows a user to enter a word and be provided with the most likely next word. The tasks involved will include:  
+
+* Research NLP techniques and algorithms most useful for a predictive model.
+* Build a basic n-gram model for predicting the next word based on the previous 1, 2, or 3 words.  
+* Build a model to handle unseen n-grams - cases where a particular n-gram hasn't been observed in the source text.  
